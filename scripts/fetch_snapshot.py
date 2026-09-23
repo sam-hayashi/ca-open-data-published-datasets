@@ -27,7 +27,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from ca_open_data_audit.ckan_client import CKANAPIError, CKANClient
 from ca_open_data_audit.config import get_settings
-from ca_open_data_audit.pipeline import build_dataframe, fetch_all_packages, save_snapshot
+from ca_open_data_audit.pipeline import (
+    build_dataframe,
+    fetch_all_packages,
+    fetch_harvest_sources,
+    save_snapshot,
+)
 
 
 def parse_args() -> argparse.Namespace:
@@ -67,11 +72,14 @@ def main() -> int:
 
     print(f"\nFetched {len(packages):,} datasets.")
 
+    harvest_sources = fetch_harvest_sources(client)
+    print(f"Fetched {len(harvest_sources):,} harvest source definitions.")
+
     if not args.no_cache_write:
-        cache_path = save_snapshot(packages, settings)
+        cache_path = save_snapshot(packages, settings, harvest_sources=harvest_sources)
         print(f"Cached raw snapshot to {cache_path}")
 
-    df = build_dataframe(packages)
+    df = build_dataframe(packages, ckan_base_url=settings.ckan_url, harvest_sources=harvest_sources)
 
     if args.only_direct and args.only_harvested:
         print("ERROR: --only-direct and --only-harvested are mutually exclusive", file=sys.stderr)

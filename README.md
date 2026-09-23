@@ -37,6 +37,42 @@ keeps working as harvest sources are added or removed. The app's
 seen across the catalog, to help confirm coverage or spot new indicator keys
 worth adding.
 
+## API endpoint resolution (federated-model verification)
+
+Every dataset row also includes an `api_endpoint` field (plus
+`api_endpoint_source`, which records *how* it was derived) so you can verify
+that harvested datasets correctly point back to their upstream/source
+portal's own API -- important when migrating to a federated portal model
+where data.ca.gov harvests from many independent CKAN/DCAT sources rather
+than hosting everything directly.
+
+- **Directly published** datasets → `api_endpoint` is always the data.ca.gov
+  `package_show` Action API call for that dataset, e.g.
+  `https://data.ca.gov/api/3/action/package_show?id=<name>`.
+  `api_endpoint_source` is `data.ca.gov (direct)`.
+- **Harvested** datasets → `api_endpoint` is resolved against the *source
+  portal the dataset was harvested from*, using this priority order (see
+  [`_build_harvest_api_endpoint`](ca_open_data_audit/pipeline.py:88)):
+  1. The package's `harvest_url` extra, if it's already a full URL.
+  2. The package's `harvest_source_reference` extra, if it's already a full
+     URL.
+  3. The matching harvest source record's `url` (fetched via
+     [`harvest_source_list`](ca_open_data_audit/ckan_client.py:156)/
+     [`fetch_harvest_sources`](ca_open_data_audit/pipeline.py:50)): if the
+     source's `source_type` is `ckan`, this is combined with the dataset's
+     `guid`/reference into a `package_show` call on the source portal;
+     otherwise the source's bare base URL is used.
+  4. The `guid` itself, if it happens to already be a full URL.
+  5. Otherwise `None`, with `api_endpoint_source` set to `unavailable`.
+
+  `harvest_source_url` (the upstream portal's bare base URL, when known) is
+  also included as its own column for quick reference.
+
+Because harvest source metadata is only available from a live fetch, cached
+snapshots now also persist the harvest source list alongside the raw
+packages, so **📂 Load cache** resolves `api_endpoint` the same way a fresh
+**🔄 Fetch live** would.
+
 ## Project layout
 
 ```
@@ -80,8 +116,15 @@ The main panel then lets you:
   search.
 - View summary metrics (total / directly published / harvested / currently
   filtered counts) and a per-organization breakdown.
-- Browse the full results table with clickable source URLs.
-- **Export** the filtered (or full) results as CSV or Excel.
+- Browse the full results table with clickable source URLs and API endpoints.
+  The results table shows a curated subset of columns by default; a
+  **Columns to display** picker above the table lets you add any of the
+  remaining fields (e.g. `harvest_source_id`, `guid`, `api_endpoint_source`,
+  `maintainer`, `notes`), and a **Columns shown (N / total)** indicator plus
+  an inline caption make it obvious when more fields are available than are
+  currently visible or fit on screen.
+- **Export** the filtered (or full) results as CSV or Excel -- exports always
+  include every column, regardless of what's currently selected for display.
 
 ## Run the CLI snapshot tool
 

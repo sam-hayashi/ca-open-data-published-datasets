@@ -29,6 +29,7 @@ from ca_open_data_audit.pipeline import (
     build_dataframe,
     extras_key_frequency,
     fetch_all_packages,
+    fetch_harvest_sources,
     load_snapshot,
     save_snapshot,
 )
@@ -39,13 +40,15 @@ st.set_page_config(
     layout="wide",
 )
 
-DISPLAY_COLUMNS = [
+# Columns shown by default. Users can add more via the "Columns to display"
+# multiselect below the results table -- see ALL_COLUMN_LABELS.
+DEFAULT_DISPLAY_COLUMNS = [
     "title",
     "name",
     "organization",
     "publication_method",
     "harvest_source_title",
-    "matched_harvest_keys",
+    "api_endpoint",
     "num_resources",
     "private",
     "state",
@@ -54,6 +57,39 @@ DISPLAY_COLUMNS = [
     "url",
     "ckan_url",
 ]
+
+# All columns that build_dataframe() can produce, in a sensible display order,
+# with friendly labels for the column picker.
+ALL_COLUMN_LABELS = {
+    "title": "Title",
+    "name": "Name (slug)",
+    "organization": "Organization",
+    "publication_method": "Publication method",
+    "is_harvested": "Is harvested",
+    "harvest_source_title": "Harvest source title",
+    "harvest_source_id": "Harvest source ID",
+    "harvest_source_url": "Harvest source base URL",
+    "matched_harvest_keys": "Matched harvest keys",
+    "guid": "GUID",
+    "api_endpoint": "API endpoint",
+    "api_endpoint_source": "API endpoint provenance",
+    "organization_name": "Organization (slug)",
+    "maintainer": "Maintainer",
+    "author": "Author",
+    "license_title": "License",
+    "num_resources": "# Resources",
+    "num_tags": "# Tags",
+    "private": "Private",
+    "state": "State",
+    "type": "Type",
+    "metadata_created": "Created",
+    "metadata_modified": "Modified",
+    "metadata_source": "Metadata source",
+    "url": "Source URL",
+    "ckan_url": "CKAN dataset path",
+    "notes": "Notes",
+    "num_extras": "# Extras",
+}
 
 
 # --------------------------------------------------------------------------
@@ -118,9 +154,11 @@ def do_live_fetch(settings) -> None:
         st.sidebar.error(f"Fetch failed: {exc}")
         return
 
-    save_snapshot(packages, settings)
+    harvest_sources = fetch_harvest_sources(client)
+    save_snapshot(packages, settings, harvest_sources=harvest_sources)
     progress_bar.empty()
     st.session_state["packages"] = packages
+    st.session_state["harvest_sources"] = harvest_sources
     st.session_state["meta"] = {
         "fetched_at": datetime.now(timezone.utc).isoformat(),
         "ckan_url": settings.ckan_url,
@@ -136,6 +174,7 @@ def do_load_cache(settings) -> None:
         st.sidebar.warning("No cached snapshot found yet. Fetch live first.")
         return
     st.session_state["packages"] = cached["packages"]
+    st.session_state["harvest_sources"] = cached.get("harvest_sources") or []
     st.session_state["meta"] = {
         "fetched_at": cached.get("fetched_at"),
         "ckan_url": cached.get("ckan_url"),
@@ -178,8 +217,13 @@ def main():
         return
 
     packages = st.session_state["packages"]
+    harvest_sources = st.session_state.get("harvest_sources") or []
     meta = st.session_state["meta"]
-    df = build_dataframe(packages)
+    df = build_dataframe(
+        packages,
+        ckan_base_url=meta.get("ckan_url") or settings.ckan_url,
+        harvest_sources=harvest_sources,
+    )
 
     st.caption(
         f"Data source: **{meta['source']}** · CKAN: `{meta['ckan_url']}` · "
@@ -250,7 +294,35 @@ def main():
     # Results table
     # ----------------------------------------------------------------
     st.subheader(f"Datasets ({filtered_count:,} shown)")
-    display_df = filtered[[c for c in DISPLAY_COLUMNS if c in filtered.columns]]
+
+    available_columns = [c for c in ALL_COLUMN_LABELS if c in filtered.columns]
+    default_columns = [c for c in DEFAULT_DISPLAY_COLUMNS if c in available_columns]
+
+    col_a, col_b = st.columns([3, 1])
+    with col_a:
+        selected_columns = st.multiselect(
+            "Columns to display",
+            options=available_columns,
+            default=default_columns,
+            format_func=lambda c: ALL_COLUMN_LABELS.get(c, c),
+            help=(
+                f"This dataset has {len(available_columns)} available fields total; "
+                "only a subset is shown by default. Add more here, or scroll the "
+                "table horizontally to see columns already selected."
+            ),
+        )
+    with col_b:
+        st.metric("Columns shown", f"{len(selected_columns)} / {len(available_columns)}")
+
+    if len(selected_columns) < len(available_columns):
+        st.caption(
+            f"ℹ️ Showing **{len(selected_columns)} of {len(available_columns)}** available columns. "
+            "Use the **Columns to display** picker above to add more, or scroll the "
+            "table horizontally (drag the scrollbar at the bottom, or click into the "
+            "table and use Shift+scroll / the arrow keys) to see additional selected columns."
+        )
+
+    display_df = filtered[selected_columns] if selected_columns else filtered.iloc[:, 0:0]
     st.dataframe(
         display_df,
         use_container_width=True,
@@ -258,6 +330,8 @@ def main():
         column_config={
             "url": st.column_config.LinkColumn("Source URL"),
             "ckan_url": st.column_config.TextColumn("CKAN dataset path"),
+            "api_endpoint": st.column_config.LinkColumn("API endpoint"),
+            "harvest_source_url": st.column_config.LinkColumn("Harvest source base URL"),
         },
     )
 
